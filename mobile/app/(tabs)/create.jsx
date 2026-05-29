@@ -59,15 +59,19 @@ export default function Create() {
         setImage(asset.uri);
 
         if (Platform.OS === "web") {
-          // Web: use native fetch and FileReader
-          const response = await fetch(asset.uri);
-          const blob = await response.blob();
+          // Web: Use FileReader to get base64
           const reader = new FileReader();
           reader.onloadend = () => {
-            const base64data = reader.result.split(",")[1];
+            const base64data = reader.result.toString().split(",")[1];
             setImageBase64(base64data);
           };
-          reader.readAsDataURL(blob);
+          // result.assets[0].uri on web is a blob URL or data URL
+          // We need the actual file object if possible, but DocumentPicker/ImagePicker
+          // usually provide a URI that can be fetched.
+          fetch(asset.uri)
+            .then(res => res.blob())
+            .then(blob => reader.readAsDataURL(blob))
+            .catch(err => console.error("Error reading web image:", err));
         } else {
           // Mobile: use legacy FileSystem
           if (asset.base64) {
@@ -98,14 +102,14 @@ export default function Create() {
         setPdfName(file.name);
 
         if (Platform.OS === "web") {
-          // Web: use native fetch and FileReader
-          const response = await fetch(file.uri);
-          const blob = await response.blob();
           const reader = new FileReader();
           reader.onloadend = () => {
-            setPdfBase64(reader.result); // Data URL includes prefix
+            setPdfBase64(reader.result.toString()); // Full data URL
           };
-          reader.readAsDataURL(blob);
+          fetch(file.uri)
+            .then(res => res.blob())
+            .then(blob => reader.readAsDataURL(blob))
+            .catch(err => console.error("Error reading web PDF:", err));
         } else {
           // Mobile: use legacy FileSystem
           const base64 = await readAsStringAsync(file.uri, {

@@ -29,6 +29,14 @@ router.post("/", protectRoute, async (req, res) => {
     console.log("[Backend] Uploading image...");
     let imageUrl = "";
     try {
+      // Log config state (hidden keys)
+      const config = cloudinary.config();
+      console.log("[Backend] Cloudinary Config State:", {
+        cloud: config.cloud_name,
+        key: config.api_key ? "PRESENT" : "MISSING",
+        secret: config.api_secret ? "PRESENT" : "MISSING"
+      });
+
       const uploadResponse = await cloudinary.uploader.upload(image, {
         folder: "books/covers",
         resource_type: "auto"
@@ -36,9 +44,9 @@ router.post("/", protectRoute, async (req, res) => {
       imageUrl = uploadResponse.secure_url;
       console.log("[Backend] Image success:", imageUrl);
     } catch (imgError) {
-      console.error("[Backend] Cloudinary Image Error Full:", imgError);
-      const errorMessage = imgError.message || (typeof imgError === 'string' ? imgError : "Unknown Cloudinary Error");
-      throw new Error(`Image upload failed: ${errorMessage}`);
+      console.error("[Backend] Cloudinary Image Error FULL:", JSON.stringify(imgError, null, 2));
+      const msg = imgError.message || imgError.error?.message || JSON.stringify(imgError);
+      throw new Error(`Image upload failed: ${msg}`);
     }
 
     // upload the pdf to cloudinary (if provided)

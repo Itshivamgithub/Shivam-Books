@@ -8,51 +8,72 @@ const router = express.Router();
 router.post("/", protectRoute, async (req, res) => {
   try {
     const { title, caption, rating, image, pdf } = req.body;
+
+    // Check Cloudinary Config
+    const cloudName = cloudinary.config().cloud_name;
+    const apiKey = cloudinary.config().api_key;
+    if (!cloudName || !apiKey) {
+      console.error("[Backend] Cloudinary configuration missing on server!");
+      return res.status(500).json({ 
+        message: "Cloudinary configuration is missing on the server. Please check environment variables." 
+      });
+    }
+
     console.log("[Backend] Creating book:", { title, hasImage: !!image, hasPdf: !!pdf });
-    console.log("[Backend] Cloudinary Config:", {
-      cloud_name: cloudinary.config().cloud_name,
-      has_key: !!cloudinary.config().api_key,
-    });
 
     if (!image || !title || !caption || !rating) {
       return res.status(400).json({ message: "Please provide all fields" });
     }
 
     // upload the image to cloudinary
-    console.log("[Backend] Uploading image to Cloudinary...");
-    const uploadResponse = await cloudinary.uploader.upload(image);
-    const imageUrl = uploadResponse.secure_url;
-    console.log("[Backend] Image uploaded successfully:", imageUrl);
+    console.log("[Backend] Uploading image...");
+    let imageUrl = "";
+    try {
+      const uploadResponse = await cloudinary.uploader.upload(image, {
+        folder: "books/covers"
+      });
+      imageUrl = uploadResponse.secure_url;
+      console.log("[Backend] Image success:", imageUrl);
+    } catch (imgError) {
+      console.error("[Backend] Cloudinary Image Error:", imgError.message);
+      throw new Error(`Image upload failed: ${imgError.message}`);
+    }
 
     // upload the pdf to cloudinary (if provided)
     let pdfUrl = "";
     if (pdf) {
-      console.log("[Backend] Uploading PDF to Cloudinary...");
-      const pdfUploadResponse = await cloudinary.uploader.upload(pdf, {
-        resource_type: "raw", // important for non-image files
-      });
-      pdfUrl = pdfUploadResponse.secure_url;
-      console.log("[Backend] PDF uploaded successfully:", pdfUrl);
+      console.log("[Backend] Uploading PDF...");
+      try {
+        const pdfUploadResponse = await cloudinary.uploader.upload(pdf, {
+          resource_type: "raw",
+          folder: "books/pdfs"
+        });
+        pdfUrl = pdfUploadResponse.secure_url;
+        console.log("[Backend] PDF success:", pdfUrl);
+      } catch (pdfError) {
+        console.error("[Backend] Cloudinary PDF Error:", pdfError.message);
+        throw new Error(`PDF upload failed: ${pdfError.message}`);
+      }
     }
 
     // save to the database
-    console.log("[Backend] Saving book to DB...");
     const newBook = new Book({
       title,
       caption,
-      rating,
+      rating: Number(rating),
       image: imageUrl,
       pdfUrl,
       user: req.user._id,
     });
 
     await newBook.save();
-    console.log("[Backend] Book saved successfully!");
-
     res.status(201).json(newBook);
   } catch (error) {
-    console.error("[Backend] Error in POST /api/books:", error);
-    res.status(500).json({ message: error.message || "Internal server error" });
+    console.error("[Backend] Request failed:", error.message);
+    res.status(500).json({ 
+      message: error.message || "Internal server error",
+      details: error.stack 
+    });
   }
 });
 

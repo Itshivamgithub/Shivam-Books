@@ -40,7 +40,6 @@ export default function Create() {
     try {
       if (Platform.OS !== "web") {
         const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-
         if (status !== "granted") {
           Alert.alert("Permission Denied", "We need camera roll permissions to upload an image");
           return;
@@ -52,19 +51,33 @@ export default function Create() {
         allowsEditing: true,
         aspect: [4, 3],
         quality: 0.5,
-        base64: true,
+        base64: Platform.OS === "web" ? false : true, // web handles base64 differently
       });
 
       if (!result.canceled) {
-        setImage(result.assets[0].uri);
+        const asset = result.assets[0];
+        setImage(asset.uri);
 
-        if (result.assets[0].base64) {
-          setImageBase64(result.assets[0].base64);
+        if (Platform.OS === "web") {
+          // Web: use native fetch and FileReader
+          const response = await fetch(asset.uri);
+          const blob = await response.blob();
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const base64data = reader.result.split(",")[1];
+            setImageBase64(base64data);
+          };
+          reader.readAsDataURL(blob);
         } else {
-          const base64 = await readAsStringAsync(result.assets[0].uri, {
-            encoding: EncodingType.Base64,
-          });
-          setImageBase64(base64);
+          // Mobile: use legacy FileSystem
+          if (asset.base64) {
+            setImageBase64(asset.base64);
+          } else {
+            const base64 = await readAsStringAsync(asset.uri, {
+              encoding: EncodingType.Base64,
+            });
+            setImageBase64(base64);
+          }
         }
       }
     } catch (error) {
@@ -84,12 +97,22 @@ export default function Create() {
         const file = result.assets[0];
         setPdfName(file.name);
 
-        const base64 = await readAsStringAsync(file.uri, {
-          encoding: EncodingType.Base64,
-        });
-
-        const pdfDataUrl = `data:application/pdf;base64,${base64}`;
-        setPdfBase64(pdfDataUrl);
+        if (Platform.OS === "web") {
+          // Web: use native fetch and FileReader
+          const response = await fetch(file.uri);
+          const blob = await response.blob();
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            setPdfBase64(reader.result); // Data URL includes prefix
+          };
+          reader.readAsDataURL(blob);
+        } else {
+          // Mobile: use legacy FileSystem
+          const base64 = await readAsStringAsync(file.uri, {
+            encoding: EncodingType.Base64,
+          });
+          setPdfBase64(`data:application/pdf;base64,${base64}`);
+        }
       }
     } catch (error) {
       console.error("Error picking PDF:", error);

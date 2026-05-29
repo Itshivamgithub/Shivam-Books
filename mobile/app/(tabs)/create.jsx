@@ -51,27 +51,25 @@ export default function Create() {
         allowsEditing: true,
         aspect: [4, 3],
         quality: 0.5,
-        base64: Platform.OS === "web" ? false : true, // web handles base64 differently
+        base64: true, // Always request base64, even on web
       });
 
       if (!result.canceled) {
         const asset = result.assets[0];
         setImage(asset.uri);
 
+        // On Web, ImagePicker often provides the full data URI in `uri` or `base64`
         if (Platform.OS === "web") {
-          // Web: Use FileReader to get base64
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            const base64data = reader.result.toString().split(",")[1];
-            setImageBase64(base64data);
-          };
-          // result.assets[0].uri on web is a blob URL or data URL
-          // We need the actual file object if possible, but DocumentPicker/ImagePicker
-          // usually provide a URI that can be fetched.
-          fetch(asset.uri)
-            .then(res => res.blob())
-            .then(blob => reader.readAsDataURL(blob))
-            .catch(err => console.error("Error reading web image:", err));
+           // On web, if base64 is provided by Expo, use it.
+           if (asset.base64) {
+             setImageBase64(asset.base64);
+           } else if (asset.uri && asset.uri.startsWith('data:')) {
+             // Sometimes the URI itself is the base64 data string
+             const base64data = asset.uri.split(",")[1];
+             setImageBase64(base64data);
+           } else {
+             Alert.alert("Web Upload Error", "Unable to process image data on the web.");
+           }
         } else {
           // Mobile: use legacy FileSystem
           if (asset.base64) {
@@ -102,14 +100,21 @@ export default function Create() {
         setPdfName(file.name);
 
         if (Platform.OS === "web") {
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            setPdfBase64(reader.result.toString()); // Full data URL
-          };
-          fetch(file.uri)
-            .then(res => res.blob())
-            .then(blob => reader.readAsDataURL(blob))
-            .catch(err => console.error("Error reading web PDF:", err));
+          // On Web, DocumentPicker provides the data URI directly in the `uri` property
+          if (file.uri && file.uri.startsWith('data:')) {
+            setPdfBase64(file.uri);
+          } else {
+             // Fallback for web if it's a blob (read using modern file method)
+             if (file.file) { // The raw File object is sometimes available on web
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                  setPdfBase64(reader.result.toString());
+                };
+                reader.readAsDataURL(file.file);
+             } else {
+                Alert.alert("Web Upload Error", "Unable to process PDF data on the web.");
+             }
+          }
         } else {
           // Mobile: use legacy FileSystem
           const base64 = await readAsStringAsync(file.uri, {

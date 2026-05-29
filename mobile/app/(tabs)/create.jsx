@@ -23,15 +23,28 @@ import * as FileSystem from "expo-file-system";
 import { readAsStringAsync, EncodingType } from "expo-file-system/legacy";
 import { API_URL } from "../../constants/api";
 
+// Helper to convert blob to base64 on web
+const blobToBase64 = (blob) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = () => {
+      resolve(reader.result);
+    };
+    reader.readAsDataURL(blob);
+  });
+};
+
 export default function Create() {
   const [title, setTitle] = useState("");
   const [caption, setCaption] = useState("");
   const [rating, setRating] = useState(3);
-  const [image, setImage] = useState(null); // to display the selected image
+  const [image, setImage] = useState(null);
   const [imageBase64, setImageBase64] = useState(null);
   const [pdfName, setPdfName] = useState("");
   const [pdfBase64, setPdfBase64] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [converting, setConverting] = useState(false);
 
   const router = useRouter();
   const { token } = useAuthStore();
@@ -41,7 +54,7 @@ export default function Create() {
       if (Platform.OS !== "web") {
         const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
         if (status !== "granted") {
-          Alert.alert("Permission Denied", "We need camera roll permissions to upload an image");
+          Alert.alert("Permission Denied", "Need permissions");
           return;
         }
       }
@@ -51,40 +64,34 @@ export default function Create() {
         allowsEditing: true,
         aspect: [4, 3],
         quality: 0.5,
-        base64: true, // Always request base64, even on web
+        base64: true,
       });
 
       if (!result.canceled) {
         const asset = result.assets[0];
         setImage(asset.uri);
 
-        // On Web, ImagePicker often provides the full data URI in `uri` or `base64`
         if (Platform.OS === "web") {
-           // On web, if base64 is provided by Expo, use it.
-           if (asset.base64) {
-             setImageBase64(asset.base64);
-           } else if (asset.uri && asset.uri.startsWith('data:')) {
-             // Sometimes the URI itself is the base64 data string
-             const base64data = asset.uri.split(",")[1];
-             setImageBase64(base64data);
-           } else {
-             Alert.alert("Web Upload Error", "Unable to process image data on the web.");
-           }
-        } else {
-          // Mobile: use legacy FileSystem
-          if (asset.base64) {
-            setImageBase64(asset.base64);
-          } else {
-            const base64 = await readAsStringAsync(asset.uri, {
-              encoding: EncodingType.Base64,
-            });
-            setImageBase64(base64);
+          setConverting(true);
+          try {
+            const response = await fetch(asset.uri);
+            const blob = await response.blob();
+            const base64 = await blobToBase64(blob);
+            setImageBase64(base64); // This is a full Data URI
+          } catch (err) {
+            console.error("Web Image conversion error:", err);
+          } finally {
+            setConverting(false);
           }
+        } else {
+          // Mobile
+          const base64 = asset.base64 || await readAsStringAsync(asset.uri, { encoding: EncodingType.Base64 });
+          setImageBase64(`data:image/jpeg;base64,${base64}`);
         }
       }
     } catch (error) {
       console.error("Error picking image:", error);
-      Alert.alert("Error", "There was a problem selecting your image");
+      Alert.alert("Error", "Problem selecting image");
     }
   };
 
@@ -92,7 +99,6 @@ export default function Create() {
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: "application/pdf",
-        copyToCacheDirectory: true,
       });
 
       if (!result.canceled) {
@@ -100,32 +106,26 @@ export default function Create() {
         setPdfName(file.name);
 
         if (Platform.OS === "web") {
-          // On Web, DocumentPicker provides the data URI directly in the `uri` property
-          if (file.uri && file.uri.startsWith('data:')) {
-            setPdfBase64(file.uri);
-          } else {
-             // Fallback for web if it's a blob (read using modern file method)
-             if (file.file) { // The raw File object is sometimes available on web
-                const reader = new FileReader();
-                reader.onloadend = () => {
-                  setPdfBase64(reader.result.toString());
-                };
-                reader.readAsDataURL(file.file);
-             } else {
-                Alert.alert("Web Upload Error", "Unable to process PDF data on the web.");
-             }
+          setConverting(true);
+          try {
+            const response = await fetch(file.uri);
+            const blob = await response.blob();
+            const base64 = await blobToBase64(blob);
+            setPdfBase64(base64);
+          } catch (err) {
+            console.error("Web PDF conversion error:", err);
+          } finally {
+            setConverting(false);
           }
         } else {
-          // Mobile: use legacy FileSystem
-          const base64 = await readAsStringAsync(file.uri, {
-            encoding: EncodingType.Base64,
-          });
+          // Mobile
+          const base64 = await readAsStringAsync(file.uri, { encoding: EncodingType.Base64 });
           setPdfBase64(`data:application/pdf;base64,${base64}`);
         }
       }
     } catch (error) {
       console.error("Error picking PDF:", error);
-      Alert.alert("Error", "There was a problem selecting your PDF");
+      Alert.alert("Error", "Problem selecting PDF");
     }
   };
 
@@ -135,14 +135,13 @@ export default function Create() {
       return;
     }
 
+    if (converting) {
+      Alert.alert("Wait", "Still processing your files...");
+      return;
+    }
+
     try {
       setLoading(true);
-
-      const uriParts = image.split(".");
-      const fileType = uriParts[uriParts.length - 1];
-      const imageType = fileType ? `image/${fileType.toLowerCase()}` : "image/jpeg";
-
-      const imageDataUrl = `data:${imageType};base64,${imageBase64}`;
 
       const response = await fetch(`${API_URL}/books`, {
         method: "POST",
@@ -154,26 +153,19 @@ export default function Create() {
           title,
           caption,
           rating: rating.toString(),
-          image: imageDataUrl,
+          image: imageBase64,
           pdf: pdfBase64,
         }),
       });
 
       const data = await response.json();
-      if (!response.ok) throw new Error(data.message || "Something went wrong");
+      if (!response.ok) throw new Error(data.message || "Server Error");
 
-      Alert.alert("Success", "Your book recommendation has been posted!");
-      setTitle("");
-      setCaption("");
-      setRating(3);
-      setImage(null);
-      setImageBase64(null);
-      setPdfName("");
-      setPdfBase64(null);
+      Alert.alert("Success", "Book Shared!");
       router.push("/");
     } catch (error) {
       console.error("Error creating post:", error);
-      Alert.alert("Error", error.message || "Something went wrong");
+      Alert.alert("Error", error.message);
     } finally {
       setLoading(false);
     }
@@ -196,48 +188,29 @@ export default function Create() {
   };
 
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1 }}
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-    >
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
       <ScrollView contentContainerStyle={styles.container} style={styles.scrollViewStyle}>
         <View style={styles.card}>
           <View style={styles.header}>
             <Text style={styles.title}>Add Book Recommendation</Text>
             <Text style={styles.subtitle}>Share your favorite reads with others</Text>
           </View>
-
           <View style={styles.form}>
             <View style={styles.formGroup}>
               <Text style={styles.label}>Book Title</Text>
               <View style={styles.inputContainer}>
-                <Ionicons
-                  name="book-outline"
-                  size={20}
-                  color={COLORS.textSecondary}
-                  style={styles.inputIcon}
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Enter book title"
-                  placeholderTextColor={COLORS.placeholderText}
-                  value={title}
-                  onChangeText={setTitle}
-                />
+                <Ionicons name="book-outline" size={20} color={COLORS.textSecondary} style={styles.inputIcon} />
+                <TextInput style={styles.input} placeholder="Enter book title" value={title} onChangeText={setTitle} />
               </View>
             </View>
-
             <View style={styles.formGroup}>
               <Text style={styles.label}>Your Rating</Text>
               {renderRatingPicker()}
             </View>
-
             <View style={styles.formGroup}>
               <Text style={styles.label}>Book Image (Cover)</Text>
               <TouchableOpacity style={styles.imagePicker} onPress={pickImage}>
-                {image ? (
-                  <Image source={{ uri: image }} style={styles.previewImage} />
-                ) : (
+                {image ? <Image source={{ uri: image }} style={styles.previewImage} /> : (
                   <View style={styles.placeholderContainer}>
                     <Ionicons name="image-outline" size={40} color={COLORS.textSecondary} />
                     <Text style={styles.placeholderText}>Tap to select image</Text>
@@ -245,73 +218,28 @@ export default function Create() {
                 )}
               </TouchableOpacity>
             </View>
-
             <View style={styles.formGroup}>
               <Text style={styles.label}>Book PDF (Optional)</Text>
-              <TouchableOpacity
-                style={[
-                  styles.imagePicker,
-                  { height: 80, borderStyle: "dashed", justifyContent: "center" },
-                ]}
-                onPress={pickPdf}
-              >
+              <TouchableOpacity style={[styles.imagePicker, { height: 80, borderStyle: "dashed", justifyContent: "center" }]} onPress={pickPdf}>
                 <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20 }}>
-                  <Ionicons
-                    name="document-text-outline"
-                    size={32}
-                    color={pdfName ? COLORS.primary : COLORS.textSecondary}
-                  />
-                  <Text
-                    style={{
-                      marginLeft: 15,
-                      color: pdfName ? COLORS.text : COLORS.textSecondary,
-                      flex: 1,
-                    }}
-                    numberOfLines={1}
-                  >
+                  <Ionicons name="document-text-outline" size={32} color={pdfName ? COLORS.primary : COLORS.textSecondary} />
+                  <Text style={{ marginLeft: 15, color: pdfName ? COLORS.text : COLORS.textSecondary, flex: 1 }} numberOfLines={1}>
                     {pdfName || "Tap to select PDF file"}
                   </Text>
                   {pdfName && (
-                    <TouchableOpacity
-                      onPress={(e) => {
-                        e.stopPropagation();
-                        setPdfName("");
-                        setPdfBase64(null);
-                      }}
-                    >
+                    <TouchableOpacity onPress={(e) => { e.stopPropagation(); setPdfName(""); setPdfBase64(null); }}>
                       <Ionicons name="close-circle" size={24} color={COLORS.error || "#ff4444"} />
                     </TouchableOpacity>
                   )}
                 </View>
               </TouchableOpacity>
             </View>
-
             <View style={styles.formGroup}>
               <Text style={styles.label}>Caption</Text>
-              <TextInput
-                style={styles.textArea}
-                placeholder="Write your review or thoughts about this book..."
-                placeholderTextColor={COLORS.placeholderText}
-                value={caption}
-                onChangeText={setCaption}
-                multiline
-              />
+              <TextInput style={styles.textArea} placeholder="Review..." value={caption} onChangeText={setCaption} multiline />
             </View>
-
-            <TouchableOpacity style={styles.button} onPress={handleSubmit} disabled={loading}>
-              {loading ? (
-                <ActivityIndicator color={COLORS.white} />
-              ) : (
-                <>
-                  <Ionicons
-                    name="cloud-upload-outline"
-                    size={20}
-                    color={COLORS.white}
-                    style={styles.buttonIcon}
-                  />
-                  <Text style={styles.buttonText}>Share</Text>
-                </>
-              )}
+            <TouchableOpacity style={styles.button} onPress={handleSubmit} disabled={loading || converting}>
+              {loading || converting ? <ActivityIndicator color={COLORS.white} /> : <Text style={styles.buttonText}>Share</Text>}
             </TouchableOpacity>
           </View>
         </View>
